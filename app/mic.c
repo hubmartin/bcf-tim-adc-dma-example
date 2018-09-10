@@ -1,16 +1,13 @@
 #include <mic.h>
 #include <stm32l083xx.h>
 
-#include <bc_gpio.h>
+typedef struct
+{
+    uint8_t rx_buffer[128];
+    bool is_busy;
+} mic_t;
 
-#define VREFINT_CAL_ADDR 0x1ff80078
-
-uint16_t _adc_vrefint;
-float _adc_real_vdda_voltage;
-
-uint8_t _mic_rx_buffer[128];
-
-volatile bool _mic_is_measuring = false;
+mic_t _mic;
 
 bool _adc_calibration(void);
 
@@ -22,7 +19,7 @@ static void _adc_init(void)
     // Errata workaround
     RCC->APB2ENR;
 
-    // Set auto-off mode, left align
+    // Set auto-off mode, right align
     ADC1->CFGR1 |= ADC_CFGR1_AUTOFF;
 
     // Set 8bit resolution
@@ -36,9 +33,6 @@ static void _adc_init(void)
 
     // Enable ADC voltage regulator
     ADC1->CR |= ADC_CR_ADVREGEN;
-
-    // Load Vrefint constant from ROM
-    _adc_vrefint = (*(uint16_t *) VREFINT_CAL_ADDR);// << 4;
 
     // Configure trigger by timer TRGO signal
     // Rising edge, TRG0 (TIM6_TRGO)
@@ -62,19 +56,6 @@ static void _tim6_init(void)
 
     // Configure update event TRGO to ADC
     TIM6->CR2 |= TIM_CR2_MMS_1;
-
-    // Debug IRQ
-    TIM6->DIER |= TIM_DIER_UIE;
-    NVIC_EnableIRQ(TIM6_DAC_IRQn);
-    bc_gpio_init(BC_GPIO_P13);
-    bc_gpio_set_mode(BC_GPIO_P13, BC_GPIO_MODE_OUTPUT);
-}
-
-// Debug the period
-void TIM6_IRQHandler(void)
-{
-    TIM6->SR &= ~TIM_SR_UIF;
-    bc_gpio_toggle_output(BC_GPIO_P13);
 }
 
 static void _dma_init(void)
@@ -101,7 +82,6 @@ static void _dma_init(void)
 
     // DMA Mode
     dma_channel->CCR &= ~DMA_CCR_CIRC_Msk;
-    //dma_channel->CCR |= DMA_CCR_CIRC; // debug circular
 
     // Set memory incrementation
     dma_channel->CCR |= DMA_CCR_MINC;
@@ -110,16 +90,16 @@ static void _dma_init(void)
     DMA1_CSELR->CSELR &= ~DMA_CSELR_C1S_Msk;
 
     // Configure DMA channel data length
-    dma_channel->CNDTR = sizeof(_mic_rx_buffer);
+    dma_channel->CNDTR = sizeof(_mic.rx_buffer);
 
     // Configure DMA channel source address
     dma_channel->CPAR = (uint32_t) &ADC1->DR;
 
     // Configure DMA channel destination address
-    dma_channel->CMAR = (uint32_t) &_mic_rx_buffer;
+    dma_channel->CMAR = (uint32_t) &_mic.rx_buffer;
 
-    // Enable the transfer complete, half-complete and error interrupts
-    dma_channel->CCR |= DMA_CCR_TCIE | /*DMA_CCR_HTIE |*/ DMA_CCR_TEIE;
+    // Enable the transfer complete and error interrupts
+    dma_channel->CCR |= DMA_CCR_TCIE | DMA_CCR_TEIE;
 
     // Enable DMA 1 channel 1 interrupt
     NVIC_SetPriority(DMA1_Channel1_IRQn, 0);
@@ -127,7 +107,6 @@ static void _dma_init(void)
 
     // Enable DMA
     dma_channel->CCR |= DMA_CCR_EN;
-
 }
 
 void DMA1_Channel1_IRQHandler(void)
@@ -137,17 +116,12 @@ void DMA1_Channel1_IRQHandler(void)
         if ((DMA1->ISR & DMA_ISR_TEIF1) != 0)
         {
             // DMA Error
-        }
-        else if ((DMA1->ISR & DMA_ISR_HTIF1) != 0)
-        {
-            // DMA Half-transer
-            // Clear DMA flag
-            DMA1->IFCR |= DMA_IFCR_CHTIF1;
+            _mic.is_busy = false;
         }
         else if ((DMA1->ISR & DMA_ISR_TCIF1) != 0)
         {
             // DMA Transfer complete
-            _mic_is_measuring = false;
+            _mic.is_busy = false;
             // Stop sampling timer
             TIM6->CR1 &= ~TIM_CR1_CEN;
             // Clear DMA flag
@@ -168,13 +142,13 @@ void mic_init(void)
 
 bool mic_start_measure(void)
 {
-    if (_mic_is_measuring)
+    if (_mic.is_busy)
     {
         return false;
     }
 
     // Set flag
-    _mic_is_measuring = true;
+    _mic.is_busy = true;
 
     // Reinit the DMA
     _dma_init();
@@ -197,7 +171,7 @@ bool mic_start_measure(void)
 
 bool mic_measure_is_done(void)
 {
-    return !_mic_is_measuring;
+    return !_mic.is_busy;
 }
 
 bool _adc_calibration(void)
@@ -214,61 +188,5 @@ bool _adc_calibration(void)
         continue;
     }
 
-    // Enable internal reference
-    ADC->CCR |= ADC_CCR_VREFEN;
-
-    // Set ADC channel
-    ADC1->CHSELR = ADC_CHSELR_CHSEL17;
-
-    // Clear EOS flag (it is cleared by software writing 1 to it)
-    ADC1->ISR = ADC_ISR_EOS;
-
-    // Perform measurement on internal reference
-    ADC1->CR |= ADC_CR_ADSTART;
-
-    while ((ADC1->ISR & ADC_ISR_EOS) == 0)
-    {
-        continue;
-    }
-
-    // Compute actual VDDA
-    _adc_real_vdda_voltage = 3.f * ((float) _adc_vrefint / (float) ADC1->DR);
-
-    // Disable internal reference
-    ADC->CCR &= ~ADC_CCR_VREFEN;
-
     return true;
 }
-
-/*
-uint8_t _adc_sync_read_8_bit()
-{
-
-    // Set ADC channel 2
-    ADC1->CHSELR = ADC_CHSELR_CHSEL2;
-
-    // Disable all ADC interrupts
-    ADC1->IER = 0;
-
-    // Clear EOS flag (it is cleared by software writing 1 to it)
-    ADC1->ISR = ADC_ISR_EOS;
-
-    // Clear ADRDY (it is cleared by software writing 1 to it)
-    ADC1->ISR |= ADC_ISR_ADRDY;
-
-    // Start the AD measurement
-    ADC1->CR |= ADC_CR_ADSTART;
-
-    // wait for end of measurement
-    while ((ADC1->ISR & ADC_ISR_EOS) == 0)
-    {
-        continue;
-    }
-
-
-    uint16_t result = ADC1->DR;
-
-    return (uint8_t)result;
-
-}
-*/

@@ -38,7 +38,7 @@ void application_init(void)
 
 void application_task()
 {
-    uint8_t value = _adc_sync_read_8_bit();
+    uint8_t value = 0; //_adc_sync_read_8_bit();
     bc_log_debug("%d", value);
 
     // RED means RECORDING https://www.youtube.com/channel/UChnxLLvzviaR5NeKOevB8iQ
