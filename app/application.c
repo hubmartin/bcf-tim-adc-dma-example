@@ -36,10 +36,11 @@ void application_init(void)
     mic_start_measure();
 }
 
+volatile float rms = 0.0f;
+
 void application_task()
 {
-    uint8_t value = 0; //_adc_sync_read_8_bit();
-    bc_log_debug("%d", value);
+    bc_log_debug("%f", mic_get_rms());
 
     // RED means RECORDING https://www.youtube.com/channel/UChnxLLvzviaR5NeKOevB8iQ
     bc_led_set_mode(&led, (mic_measure_is_done()) ? BC_LED_MODE_OFF : BC_LED_MODE_ON);

@@ -1,9 +1,13 @@
 #include <mic.h>
 #include <stm32l083xx.h>
 
+#include <stdlib.h>
+
+#define _MIC_NUMBER_OF_SAMPLES 128
+
 typedef struct
 {
-    uint8_t rx_buffer[128];
+    uint8_t rx_buffer[_MIC_NUMBER_OF_SAMPLES];
     bool is_busy;
 } mic_t;
 
@@ -50,8 +54,9 @@ static void _tim6_init(void)
     // Disable counter if it is running
     TIM6->CR1 &= ~TIM_CR1_CEN;
 
-    // Set prescaler to 5 * 32 (5 microseconds resolution)
+    // Set prescaler
     TIM6->PSC = 1000 * 32 - 1;
+    // Set auto-reload
     TIM6->ARR = 50 - 1;
 
     // Configure update event TRGO to ADC
@@ -189,4 +194,19 @@ bool _adc_calibration(void)
     }
 
     return true;
+}
+
+float mic_get_rms(void)
+{
+    uint32_t sum = 0;
+
+    for (int i = 0; i < _MIC_NUMBER_OF_SAMPLES; i++)
+    {
+        // 127 - half of the input signal
+        sum += abs(_mic.rx_buffer[i] - 127);
+    }
+
+    float rms = (sum / _MIC_NUMBER_OF_SAMPLES) * 0.7071f;
+
+    return rms;
 }
